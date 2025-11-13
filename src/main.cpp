@@ -5,8 +5,8 @@
 #include <EEPROM.h>
 
 /* ================== WiFi 配置 ================== */
-const char* WIFI_SSID = "FastWifi";      // ← 改成你的 WiFi
-const char* WIFI_PASS = "zyjlxy123";  // ← 改成你的密码
+const char* WIFI_SSID = "/";      // ← 改成你的 WiFi
+const char* WIFI_PASS = "/";  // ← 改成你的密码
 
 /* ================== 引脚映射（ESP-12F） ================== */
 // 两个磁保持继电器（L9110S，互反脉冲）
@@ -19,10 +19,10 @@ const uint8_t R2_B = 13;
 const uint8_t BTN1 = 5;
 const uint8_t BTN2 = 4;
 
-// LED2：显示继电器2（低亮高灭）
+// LED2：GPIO15 → 电阻 → LED → GND（高电平点亮）
 const uint8_t LED2 = 15;
 
-// “灯光”PWM 输出（默认复用 GPIO2 / LED1）
+// “灯光”PWM 输出（默认复用 GPIO2 / LED1），低电平点亮
 const uint8_t LIGHT_PIN        = 2;     // GPIO2
 const bool    LIGHT_ACTIVE_LOW = true;  // 低电平点亮（GPIO2 常见接法）
 
@@ -84,27 +84,18 @@ void lightOutput(uint8_t pct){
 
 /* “总控逻辑”：灯光仅在 relay1On==true 时输出，OFF 时强制 0% */
 void applyLightByMode(){
-  if (!relay1On) {
-    lightOutput(0);
-    return;
-  }
-  if (!blinkEn) {
-    lightOutput(lightPct);
-    return;
-  }
+  if (!relay1On) { lightOutput(0); return; }
+  if (!blinkEn)  { lightOutput(lightPct); return; }
   // 闪烁：50% 占空比
   uint32_t now = millis();
   uint32_t halfPeriod = (uint32_t)((blinkHz > 0.01f) ? (500.0f / blinkHz) : 500);
-  if(now >= blinkNext){
-    blinkPhase = !blinkPhase;
-    blinkNext = now + halfPeriod;
-  }
+  if(now >= blinkNext){ blinkPhase = !blinkPhase; blinkNext = now + halfPeriod; }
   lightOutput(blinkPhase ? lightPct : 0);
 }
 
-/* -------------- LED2 跟继电器2 -------------- */
+/* -------------- LED2 跟继电器2（高=亮，低=灭） -------------- */
 void updateLED2() {
-  digitalWrite(LED2, relay2On ? LOW : HIGH); // 低亮高灭
+  digitalWrite(LED2, relay2On ? HIGH : LOW);
 }
 
 /* -------------- 网页 UI -------------- */
@@ -221,7 +212,6 @@ void handleIp(){ server.send(200,"text/plain",WiFi.localIP().toString()); }
 void setRelay(uint8_t id,bool on,const char* src){
   if(id==1 && relay1On!=on){
     relay1On=on; driveRelay(R1_A,R1_B,on); saveState(); updateLED2();
-    // 继电器1变动 → 立即应用灯光“总控”逻辑
     blinkNext = millis(); // 重置闪烁时间基
     lastAct = String(src)+" R1 "+(on?"ON":"OFF"); lastActSeq++;
   }
@@ -234,7 +224,7 @@ void handleToggle(){
   uint8_t id = server.hasArg("id") ? server.arg("id").toInt() : 0;
   if(id==1) setRelay(1,!relay1On,"WEB");
   if(id==2) setRelay(2,!relay2On,"WEB");
-  handleState();
+  handleState(); // ← 返回响应，防止前端等待导致重复触发
 }
 void handleLight(){
   if(server.hasArg("pct")){
@@ -247,9 +237,7 @@ void handleLight(){
   handleState();
 }
 void handleBlink(){
-  if(server.hasArg("ena")){
-    blinkEn = (server.arg("ena")=="1");
-  }
+  if(server.hasArg("ena")) blinkEn = (server.arg("ena")=="1");
   if(server.hasArg("hz")){
     float hz = server.arg("hz").toFloat();
     if(!isnan(hz) && hz>0.05f && hz<50.0f) blinkHz = hz;
@@ -284,8 +272,9 @@ void setup() {
   pinMode(BTN1,INPUT_PULLUP);
   pinMode(BTN2,INPUT_PULLUP);
 
-  // LED2（继电器2状态灯，低亮高灭）
-  pinMode(LED2,OUTPUT); digitalWrite(LED2,HIGH);
+  // LED2（**高电平点亮**；且 GPIO15 上电需为 LOW → 默认拉低更安全）
+  pinMode(LED2,OUTPUT); 
+  digitalWrite(LED2, LOW);   // 默认灭、且满足启动要求
 
   // 灯光 PWM 初始化（GPIO2）
   pinMode(LIGHT_PIN, OUTPUT);
@@ -313,12 +302,20 @@ void setup() {
     Serial.println("WiFi failed.");
   }
 
-  // 路由
+  // 路由（确保每个动作都返回响应，避免“哒哒哒”）
   server.on("/", [](){ server.send(200,"text/html; charset=utf-8",htmlPage()); });
   server.on("/api/state", handleState);
   server.on("/api/ip",    handleIp);
-  server.on("/api/r1",    [](){ setRelay(1, server.arg("on")=="1", "WEB"); });
-  server.on("/api/r2",    [](){ setRelay(2, server.arg("on")=="1", "WEB"); });
+  server.on("/api/r1",    [](){
+    bool on = server.hasArg("on") && server.arg("on")=="1";
+    setRelay(1, on, "WEB");
+    handleState();
+  });
+  server.on("/api/r2",    [](){
+    bool on = server.hasArg("on") && server.arg("on")=="1";
+    setRelay(2, on, "WEB");
+    handleState();
+  });
   server.on("/api/toggle",handleToggle);
   server.on("/api/light", handleLight);
   server.on("/api/blink", handleBlink);
