@@ -2,11 +2,10 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
-#include <EEPROM.h>
 
 /* ================== WiFi 配置 ================== */
 const char* WIFI_SSID = "/";      // ← 改成你的 WiFi
-const char* WIFI_PASS = "/";  // ← 改成你的密码
+const char* WIFI_PASS = "/";      // ← 改成你的密码
 
 /* ================== 引脚映射（ESP-12F） ================== */
 // 两个磁保持继电器（L9110S，互反脉冲）
@@ -29,7 +28,6 @@ const bool    LIGHT_ACTIVE_LOW = true;  // 低电平点亮（GPIO2 常见接法�
 /* ================== 参数 ================== */
 const uint16_t PULSE_MS    = 30;   // 磁保持继电器脉冲宽度 20~50ms
 const uint16_t DEBOUNCE_MS = 40;   // 按钮去抖
-const uint16_t EE_ADDR     = 0;    // EEPROM bit0=r1, bit1=r2
 
 // 灯光参数（亮度/闪烁只在 relay1On=ON 时生效）
 uint8_t  lightPct   = 50;     // 0~100 %
@@ -53,23 +51,19 @@ struct Btn {
   uint32_t lastChg = 0;
 } btn1{BTN1}, btn2{BTN2};
 
-/* -------------- 状态存储（继电器） -------------- */
-void saveState() {
-  uint8_t b = (relay1On ? 1 : 0) | (relay2On ? 2 : 0);
-  EEPROM.write(EE_ADDR, b);
-  EEPROM.commit();
-}
-void loadState() {
-  EEPROM.begin(4);
-  uint8_t b = EEPROM.read(EE_ADDR);
-  relay1On = b & 0x01;
-  relay2On = b & 0x02;
-}
-
 /* -------------- 继电器互反脉冲 -------------- */
 void driveRelay(uint8_t A, uint8_t B, bool on) {
-  if (on) { digitalWrite(A, HIGH); digitalWrite(B, LOW);  delay(PULSE_MS); digitalWrite(A, LOW); }
-  else    { digitalWrite(A, LOW);  digitalWrite(B, HIGH); delay(PULSE_MS); digitalWrite(B, LOW); }
+  if (on) {
+    digitalWrite(A, HIGH);
+    digitalWrite(B, LOW);
+    delay(PULSE_MS);
+    digitalWrite(A, LOW);
+  } else {
+    digitalWrite(A, LOW);
+    digitalWrite(B, HIGH);
+    delay(PULSE_MS);
+    digitalWrite(B, LOW);
+  }
 }
 
 /* -------------- 灯光 PWM -------------- */
@@ -89,7 +83,10 @@ void applyLightByMode(){
   // 闪烁：50% 占空比
   uint32_t now = millis();
   uint32_t halfPeriod = (uint32_t)((blinkHz > 0.01f) ? (500.0f / blinkHz) : 500);
-  if(now >= blinkNext){ blinkPhase = !blinkPhase; blinkNext = now + halfPeriod; }
+  if(now >= blinkNext){
+    blinkPhase = !blinkPhase;
+    blinkNext = now + halfPeriod;
+  }
   lightOutput(blinkPhase ? lightPct : 0);
 }
 
@@ -159,7 +156,10 @@ function paint(j){
   st.innerHTML='继电器1: ' + (j.r1?'<span class="on">ON</span>':'<span class="off">OFF</span>')
              + '　继电器2: ' + (j.r2?'<span class="on">ON</span>':'<span class="off">OFF</span>')
              + '　灯光: ' + (j.r1 ? (j.blink?('<span class="on">闪</span>@'+j.hz.toFixed(1)+'Hz'):(j.lp+'%')) : '<span class="off">OFF</span>');
-  if(j.seq!==lastSeq){ lastSeq=j.seq; act.innerText=j.act+' @ '+new Date().toLocaleTimeString(); }
+  if(j.seq!==lastSeq){
+    lastSeq=j.seq;
+    act.innerText=j.act+' @ '+new Date().toLocaleTimeString();
+  }
   if(!lockUI){
     document.getElementById('sl').value = j.lp;
     document.getElementById('slv').innerText = j.lp + '%';
@@ -197,7 +197,6 @@ window.onload=()=>{
 
 /* -------------- Web API -------------- */
 void handleState(){
-  // 返回继电器、灯光、动作信息；注意：灯光是否输出由 r1 决定
   String j = String("{\"r1\":")+(relay1On?"true":"false")
            +",\"r2\":"+(relay2On?"true":"false")
            +",\"lp\":"+String(lightPct)
@@ -211,13 +210,19 @@ void handleIp(){ server.send(200,"text/plain",WiFi.localIP().toString()); }
 
 void setRelay(uint8_t id,bool on,const char* src){
   if(id==1 && relay1On!=on){
-    relay1On=on; driveRelay(R1_A,R1_B,on); saveState(); updateLED2();
-    blinkNext = millis(); // 重置闪烁时间基
-    lastAct = String(src)+" R1 "+(on?"ON":"OFF"); lastActSeq++;
+    relay1On=on;
+    driveRelay(R1_A,R1_B,on);
+    updateLED2();                 // 注意：这里只让 LED2 跟随继电器2 的状态，但调用没问题
+    blinkNext = millis();         // 重置闪烁时间基
+    lastAct = String(src)+" R1 "+(on?"ON":"OFF");
+    lastActSeq++;
   }
   if(id==2 && relay2On!=on){
-    relay2On=on; driveRelay(R2_A,R2_B,on); saveState(); updateLED2();
-    lastAct = String(src)+" R2 "+(on?"ON":"OFF"); lastActSeq++;
+    relay2On=on;
+    driveRelay(R2_A,R2_B,on);
+    updateLED2();
+    lastAct = String(src)+" R2 "+(on?"ON":"OFF");
+    lastActSeq++;
   }
 }
 void handleToggle(){
@@ -230,7 +235,8 @@ void handleLight(){
   if(server.hasArg("pct")){
     int v = constrain(server.arg("pct").toInt(),0,100);
     lightPct = (uint8_t)v;
-    lastAct = String("WEB LIGHT ")+String(lightPct)+"%"; lastActSeq++;
+    lastAct = String("WEB LIGHT ")+String(lightPct)+"%";
+    lastActSeq++;
     // 若继电器1=ON且非闪烁，立即体现
     if(relay1On && !blinkEn) lightOutput(lightPct);
   }
@@ -244,16 +250,23 @@ void handleBlink(){
   }
   blinkPhase = true;         // 重置相位
   blinkNext  = millis();
-  lastAct = String("WEB BLINK ")+(blinkEn?("ON @ "+String(blinkHz,1)+"Hz"):"OFF"); lastActSeq++;
+  lastAct = String("WEB BLINK ")+(blinkEn?("ON @ "+String(blinkHz,1)+"Hz"):"OFF");
+  lastActSeq++;
   handleState();
 }
 
 /* -------------- 按钮扫描 -------------- */
 void scanBtn(Btn &b, bool &toggleFlag){
   bool v = digitalRead(b.pin);
-  if(v!=b.lastRead){ b.lastRead=v; b.lastChg=millis(); }
+  if(v!=b.lastRead){
+    b.lastRead=v;
+    b.lastChg=millis();
+  }
   if(millis()-b.lastChg>DEBOUNCE_MS){
-    if(v!=b.lastStable){ b.lastStable=v; if(v==LOW) toggleFlag=true; }
+    if(v!=b.lastStable){
+      b.lastStable=v;
+      if(v==LOW) toggleFlag=true;
+    }
   }
 }
 
@@ -272,7 +285,7 @@ void setup() {
   pinMode(BTN1,INPUT_PULLUP);
   pinMode(BTN2,INPUT_PULLUP);
 
-  // LED2（**高电平点亮**；且 GPIO15 上电需为 LOW → 默认拉低更安全）
+  // LED2（高电平点亮；且 GPIO15 上电需为 LOW → 默认拉低更安全）
   pinMode(LED2,OUTPUT); 
   digitalWrite(LED2, LOW);   // 默认灭、且满足启动要求
 
@@ -282,10 +295,9 @@ void setup() {
   analogWriteFreq(1000);      // 1kHz
   lightOutput(0);             // 上电默认灭（等继电器1=ON 后再输出）
 
-  // 恢复继电器状态
-  loadState();
-  driveRelay(R1_A,R1_B,relay1On);
-  driveRelay(R2_A,R2_B,relay2On);
+  // 不再从 EEPROM 恢复，默认继电器全 OFF、LED2 随之 OFF
+  relay1On = false;
+  relay2On = false;
   updateLED2();
 
   // WiFi & mDNS
@@ -293,7 +305,10 @@ void setup() {
   WiFi.begin(WIFI_SSID,WIFI_PASS);
   Serial.printf("Connecting to %s ...\n", WIFI_SSID);
   uint32_t t0 = millis();
-  while(WiFi.status()!=WL_CONNECTED && millis()-t0<15000){ delay(300); Serial.print("."); }
+  while(WiFi.status()!=WL_CONNECTED && millis()-t0<15000){
+    delay(300);
+    Serial.print(".");
+  }
   Serial.println();
   if (WiFi.status()==WL_CONNECTED) {
     Serial.printf("WiFi OK, IP: %s\n", WiFi.localIP().toString().c_str());
@@ -302,7 +317,7 @@ void setup() {
     Serial.println("WiFi failed.");
   }
 
-  // 路由（确保每个动作都返回响应，避免“哒哒哒”）
+  // 路由
   server.on("/", [](){ server.send(200,"text/html; charset=utf-8",htmlPage()); });
   server.on("/api/state", handleState);
   server.on("/api/ip",    handleIp);
